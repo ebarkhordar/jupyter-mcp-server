@@ -1140,3 +1140,106 @@ def test_neither_hook_can_fail_the_cell(where):
     about the cell would not go out trades the work for the story about it."""
     body = _enclosing_source(where)
     assert body.count("except Exception") >= 2, where
+
+
+# ---------------------------------------------------------------------------
+# The answer has to survive the runner that serializes it
+# ---------------------------------------------------------------------------
+
+
+def test_a_task_answer_is_tagged_as_one():
+    """`resultType: "task"`, which is what stops the runner sieving it.
+
+    The 2026-07-28 vocabulary tags every result so a client knows how to
+    parse it. `"complete"` and `"input_required"` are the core tags and the
+    union is open; the SDK's own `ResultType` docstring says the tasks
+    extension reserves `"task"`.
+
+    An *absent* tag means `"complete"`, and the runner then validates the
+    answer against `union[CallToolResult, InputRequiredResult]` — which a
+    task is not. `CreateTaskResult` has no `result_type` field of its own, so
+    returning it plain could only ever produce an untagged result.
+    """
+    from mcp.server.runner import CORE_RESULT_TYPES
+
+    from jupyter_mcp_server.tasks import TASK_RESULT_TYPE, TaskRecord, _as_a_task
+
+    answer = _as_a_task(TaskRecord(task_id="tsk_1", ttl=1000, tool="a_tool"))
+    dumped = answer.model_dump(by_alias=True, mode="json", exclude_none=True)
+    assert dumped["resultType"] == TASK_RESULT_TYPE
+    assert dumped["resultType"] not in CORE_RESULT_TYPES, (
+        "a core tag is sieved against CallToolResult, which a task is not"
+    )
+
+
+def test_it_is_still_a_create_task_result():
+    """A subclass, so everything holding the model keeps working."""
+    from mcp.types import CreateTaskResult
+
+    from jupyter_mcp_server.tasks import TaskRecord, _as_a_task
+
+    answer = _as_a_task(TaskRecord(task_id="tsk_2", ttl=1000, tool="a_tool"))
+    assert isinstance(answer, CreateTaskResult)
+    assert answer.task.task_id == "tsk_2"
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_task_is_tagged_too(extension, store):
+    """The retry path answers a task as well, and it is the same wire rule.
+
+    A client retrying under an idempotency key is doing so *because* the
+    first answer did not arrive — so an untagged replay would fail exactly
+    the caller who has already been let down once.
+    """
+    from mcp.server.runner import _dump_result
+
+    from jupyter_mcp_server.tasks import TASK_RESULT_TYPE
+
+    async def call_next(ctx):
+        await asyncio.Event().wait()
+
+    first = await extension.intercept_tool_call(keyed("k-replay"), object(), call_next)
+    again = await extension.intercept_tool_call(keyed("k-replay"), object(), call_next)
+    assert again.task.task_id == first.task.task_id, "it started a second task"
+    # Positively, not "outside the core vocabulary": an *absent* tag is also
+    # outside it, and means "complete" — so `not in CORE_RESULT_TYPES` is
+    # satisfied by the very bug this is here to catch.
+    assert _dump_result(again).get("resultType") == TASK_RESULT_TYPE
+
+
+@pytest.mark.asyncio
+async def test_the_runner_serializes_a_task_answer(extension):
+    """The test that would have caught it: through the SDK's own serializer.
+
+    Every test above asserted on the object the interception returns, and
+    every one of them passed while `tools/call` answered
+    `-32603 Handler returned an invalid result` on a deployment — because
+    nothing here ever asked the runner to put the object on the wire.
+    Measured against mcp 2.1.1 on 2026-09-06.
+    """
+    from mcp.server.runner import _dump_result
+    from mcp_types import methods as _methods
+    from mcp.server.runner import CORE_RESULT_TYPES, MODERN_PROTOCOL_VERSIONS
+
+    async def call_next(ctx):
+        await asyncio.Event().wait()
+
+    answer = await extension.intercept_tool_call(call(task=TaskMetadata()), object(), call_next)
+    dumped = _dump_result(answer)
+    version = next(iter(MODERN_PROTOCOL_VERSIONS))
+
+    # The runner's own rule, applied here rather than described: a tag
+    # outside the core vocabulary means the sieve is skipped.
+    result_type = dumped.get("resultType")
+    core_shape = (
+        version not in MODERN_PROTOCOL_VERSIONS
+        or not isinstance(result_type, str)
+        or result_type in CORE_RESULT_TYPES
+    )
+    assert not core_shape, (
+        f"the runner would sieve this against CallToolResult: resultType={result_type!r}"
+    )
+
+    # And if it ever is sieved, say what happens, so the failure names itself.
+    if core_shape:  # pragma: no cover - the assertion above owns this
+        _methods.serialize_server_result("tools/call", version, dumped)
