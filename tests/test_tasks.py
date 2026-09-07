@@ -165,7 +165,7 @@ async def test_asking_for_the_result_of_a_failed_task_is_an_error_not_a_blank(
     answer = await extension.intercept_tool_call(call(task=TaskMetadata()), object(), call_next)
     await settle()
     with pytest.raises(MCPError) as refused:
-        await extension._handle_result(_Params(answer.task.task_id), object())
+        await extension._handle_result(object(), _Params(answer.task.task_id))
     assert "the kernel is dead" in str(refused.value)
 
 
@@ -179,7 +179,7 @@ async def test_asking_for_the_result_of_a_running_task_is_refused(extension):
 
     answer = await extension.intercept_tool_call(call(task=TaskMetadata()), object(), call_next)
     with pytest.raises(MCPError) as refused:
-        await extension._handle_result(_Params(answer.task.task_id), object())
+        await extension._handle_result(object(), _Params(answer.task.task_id))
     assert "working" in str(refused.value)
 
 
@@ -190,7 +190,7 @@ async def test_the_result_of_a_completed_task_is_what_the_tool_returned(extensio
 
     answer = await extension.intercept_tool_call(call(task=TaskMetadata()), object(), call_next)
     await settle()
-    assert await extension._handle_result(_Params(answer.task.task_id), object()) == {
+    assert await extension._handle_result(object(), _Params(answer.task.task_id)) == {
         "content": [{"type": "text", "text": "42"}]
     }
 
@@ -266,7 +266,7 @@ async def test_a_task_that_never_existed_and_one_that_expired_answer_the_same(
     messages = []
     for task_id in ("tsk_gone", "tsk_never"):
         with pytest.raises(MCPError) as refused:
-            await extension._handle_get(_Params(task_id), object())
+            await extension._handle_get(object(), _Params(task_id))
         messages.append(str(refused.value).replace(task_id, "<id>"))
     assert messages[0] == messages[1]
 
@@ -288,7 +288,7 @@ async def test_cancelling_stops_the_work_and_records_why(extension, store):
     await settle()
     assert started.is_set()
 
-    cancelled = await extension._handle_cancel(_Params(answer.task.task_id), object())
+    cancelled = await extension._handle_cancel(object(), _Params(answer.task.task_id))
     assert cancelled.status == "cancelled"
     await settle()
     # The work really stopped rather than the record merely saying so.
@@ -305,7 +305,7 @@ async def test_cancelling_a_finished_task_answers_it_as_it_is(extension, store):
 
     answer = await extension.intercept_tool_call(call(task=TaskMetadata()), object(), call_next)
     await settle()
-    cancelled = await extension._handle_cancel(_Params(answer.task.task_id), object())
+    cancelled = await extension._handle_cancel(object(), _Params(answer.task.task_id))
     assert cancelled.status == "completed"
 
 
@@ -320,7 +320,7 @@ async def test_a_cancelled_task_is_not_then_reported_as_failed(extension, store)
 
     answer = await extension.intercept_tool_call(call(task=TaskMetadata()), object(), call_next)
     await settle()
-    await extension._handle_cancel(_Params(answer.task.task_id), object())
+    await extension._handle_cancel(object(), _Params(answer.task.task_id))
     await settle()
     assert (await store.get(answer.task.task_id)).status == "cancelled"
 
@@ -351,7 +351,7 @@ async def test_work_cancelled_from_outside_still_ends_the_task(extension, store)
 @pytest.mark.asyncio
 async def test_cancelling_a_task_that_does_not_exist_says_so(extension):
     with pytest.raises(MCPError):
-        await extension._handle_cancel(_Params("tsk_never"), object())
+        await extension._handle_cancel(object(), _Params("tsk_never"))
 
 
 # ---------------------------------------------------------------------------
@@ -591,7 +591,7 @@ async def test_a_cancelled_task_is_announced(extension, store):
         call(task=TaskMetadata()), _Ctx(session), call_next
     )
     await settle()
-    await extension._handle_cancel(_Params(answer.task.task_id), _Ctx(session))
+    await extension._handle_cancel(_Ctx(session), _Params(answer.task.task_id))
     await settle()
     assert any(n.params.status == "cancelled" for n in session.sent)
 
@@ -658,7 +658,7 @@ async def test_cancelling_interrupts_the_work_before_it_stops_waiting(extension,
 
     answer = await extension.intercept_tool_call(call(task=TaskMetadata()), object(), call_next)
     await settle()
-    await extension._handle_cancel(_Params(answer.task.task_id), object())
+    await extension._handle_cancel(object(), _Params(answer.task.task_id))
     assert interrupted == [1]
 
 
@@ -673,7 +673,7 @@ async def test_an_interrupt_that_fails_does_not_stop_the_cancellation(extension,
 
     answer = await extension.intercept_tool_call(call(task=TaskMetadata()), object(), call_next)
     await settle()
-    cancelled = await extension._handle_cancel(_Params(answer.task.task_id), object())
+    cancelled = await extension._handle_cancel(object(), _Params(answer.task.task_id))
     assert cancelled.status == "cancelled"
 
 
@@ -694,7 +694,7 @@ async def test_an_async_interrupt_is_awaited(extension):
 
     answer = await extension.intercept_tool_call(call(task=TaskMetadata()), object(), call_next)
     await settle()
-    await extension._handle_cancel(_Params(answer.task.task_id), object())
+    await extension._handle_cancel(object(), _Params(answer.task.task_id))
     assert interrupted == [1]
 
 
@@ -707,7 +707,7 @@ async def test_a_task_with_no_interrupt_still_cancels(extension):
 
     answer = await extension.intercept_tool_call(call(task=TaskMetadata()), object(), call_next)
     await settle()
-    cancelled = await extension._handle_cancel(_Params(answer.task.task_id), object())
+    cancelled = await extension._handle_cancel(object(), _Params(answer.task.task_id))
     assert cancelled.status == "cancelled"
 
 
@@ -737,7 +737,7 @@ async def test_a_finished_task_is_not_interrupted(extension, store):
 
     answer = await extension.intercept_tool_call(call(task=TaskMetadata()), object(), call_next)
     await settle()
-    await extension._handle_cancel(_Params(answer.task.task_id), object())
+    await extension._handle_cancel(object(), _Params(answer.task.task_id))
     assert interrupted == []
 
 
@@ -863,7 +863,7 @@ async def test_cancelling_serves_what_the_work_had_already_printed(extension, st
         call(task=TaskMetadata()), object(), call_next
     )
     await asyncio.wait_for(started.wait(), timeout=2)
-    await extension._handle_cancel(_Params(answer.task.task_id), object())
+    await extension._handle_cancel(object(), _Params(answer.task.task_id))
     await settle()
 
     record = await store.get(answer.task.task_id)
@@ -884,7 +884,7 @@ async def test_a_cancelled_task_that_printed_nothing_has_no_result(extension, st
         call(task=TaskMetadata()), object(), call_next
     )
     await settle()
-    await extension._handle_cancel(_Params(answer.task.task_id), object())
+    await extension._handle_cancel(object(), _Params(answer.task.task_id))
     await settle()
     assert (await store.get(answer.task.task_id)).result is None
 
@@ -903,7 +903,7 @@ async def test_a_task_that_finished_first_keeps_its_own_result(extension, store)
         call(task=TaskMetadata()), object(), call_next
     )
     await settle()
-    await extension._handle_cancel(_Params(answer.task.task_id), object())
+    await extension._handle_cancel(object(), _Params(answer.task.task_id))
     await settle()
     record = await store.get(answer.task.task_id)
     assert record.status == "completed"
@@ -1243,3 +1243,85 @@ async def test_the_runner_serializes_a_task_answer(extension):
     # And if it ever is sieved, say what happens, so the failure names itself.
     if core_shape:  # pragma: no cover - the assertion above owns this
         _methods.serialize_server_result("tools/call", version, dumped)
+
+
+# ---------------------------------------------------------------------------
+# The methods have to be callable the way the runner calls them
+# ---------------------------------------------------------------------------
+
+
+def _binding(extension, method):
+    """The extension's own binding for `method`, as the runner holds it."""
+    for binding in extension.methods():
+        if binding.method == method:
+            return binding
+    raise AssertionError(f"{method} is not bound")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["tasks/get", "tasks/cancel", "tasks/result"])
+async def test_every_task_method_is_callable_as_the_runner_calls_it(extension, method):
+    """`handler(ctx, params)` — the SDK's order, not the definition's.
+
+    The SDK types a bound handler `Callable[[ServerRequestContext, Any], ...]`
+    and invokes it `await entry.handler(ctx, typed_params)`. These were
+    written `(params, ctx)`, so each received the context where it expected
+    the parameters and answered
+
+        AttributeError: 'ServerRequestContext' object has no attribute 'task_id'
+
+    which the runner turns into `-32603 Internal server error`. Measured on a
+    deployment on 2026-09-07, on the first request that ever reached them:
+    creating a task worked and nothing could then be asked about it.
+
+    Every existing test called these directly, in the order the definitions
+    used, so all of them passed against a server where none of the four
+    methods worked. This one goes through the binding.
+    """
+    async def call_next(ctx):
+        return {"content": "done"}
+
+    answer = await extension.intercept_tool_call(call(task=TaskMetadata()), object(), call_next)
+    await settle()
+    task_id = answer.task.task_id
+
+    binding = _binding(extension, method)
+    params = binding.params_type.model_validate({"taskId": task_id})
+    # Positionally, exactly as `runner._on_request` does it.
+    await binding.handler(object(), params)
+
+
+@pytest.mark.asyncio
+async def test_the_listing_is_bound_the_same_way(extension):
+    """`tasks/list` never failed, which is why it is checked here too.
+
+    It reads nothing off either argument, so it answered correctly while its
+    three siblings were broken — a smoke test that listed tasks would have
+    passed on a server where nothing else about a task could be asked.
+    """
+    binding = _binding(extension, "tasks/list")
+    answer = await binding.handler(object(), binding.params_type.model_validate({}))
+    assert hasattr(answer, "tasks")
+
+
+def test_the_bindings_match_the_sdk_s_handler_type():
+    """Held against the SDK's own alias, so a change of convention there is a
+    failing test rather than a `-32603` on a deployment."""
+    import inspect
+    import typing
+
+    from mcp.server.extension import RequestHandler
+
+    # `Callable[[A, B], R]` unpacks as `([A, B], R)`, so the parameter list
+    # is the first element rather than something to unwrap again.
+    parameters = typing.get_args(RequestHandler)[0]
+    assert "ServerRequestContext" in str(parameters[0]), (
+        f"the SDK now passes {parameters[0]} first; the handlers below take ctx first"
+    )
+    extension = TasksExtension(MemoryTaskStore())
+    for binding in extension.methods():
+        names = list(inspect.signature(binding.handler).parameters)
+        assert names[:2] == ["ctx", "params"], (
+            f"{binding.method} takes {names[:2]}, but the runner calls "
+            "handler(ctx, params)"
+        )

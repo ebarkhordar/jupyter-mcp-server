@@ -529,6 +529,29 @@ class TasksExtension(Extension):
         }
 
     def methods(self) -> Sequence[MethodBinding]:
+        """The four `tasks/*` methods, bound the way the runner calls them.
+
+        **`(ctx, params)`, and the order is not a detail.** The SDK types a
+        bound handler as `Callable[[ServerRequestContext, Any], ...]` and
+        invokes it `await entry.handler(ctx, typed_params)`. These were
+        written `(params, ctx)`, so every one of them received the context
+        where it expected the parameters: `tasks/get`, `tasks/cancel` and
+        `tasks/result` all read `params.task_id` and got
+
+            AttributeError: 'ServerRequestContext' object has no attribute 'task_id'
+
+        which the runner turns into `-32603 Internal server error`. Measured
+        on a deployment on 2026-09-07, on the first request that ever reached
+        them: creating a task worked and nothing could then be asked about it.
+
+        `tasks/list` did *not* fail, which is worse — it reads nothing off
+        either argument, so it answered correctly while its three siblings
+        were broken, and a smoke test that listed tasks would have passed.
+
+        Nothing caught it because every test called these directly, in the
+        order the definitions used. `tests/test_tasks.py` drives them through
+        a real `MethodBinding` now.
+        """
         return (
             MethodBinding(
                 method="tasks/get",
@@ -558,17 +581,17 @@ class TasksExtension(Extension):
 
     # -- the four methods ---------------------------------------------------
 
-    async def _handle_get(self, params: Any, ctx: Any) -> GetTaskResult:
+    async def _handle_get(self, ctx: Any, params: Any) -> GetTaskResult:
         record = await self.store.get(params.task_id)
         if record is None:
             raise _no_such_task(params.task_id)
         return GetTaskResult(**record.public().model_dump(by_alias=False))
 
-    async def _handle_list(self, params: Any, ctx: Any) -> ListTasksResult:
+    async def _handle_list(self, ctx: Any, params: Any) -> ListTasksResult:
         records = await self.store.list()
         return ListTasksResult(tasks=[record.public() for record in records])
 
-    async def _handle_cancel(self, params: Any, ctx: Any) -> CancelTaskResult:
+    async def _handle_cancel(self, ctx: Any, params: Any) -> CancelTaskResult:
         record = await self.store.get(params.task_id)
         if record is None:
             raise _no_such_task(params.task_id)
@@ -590,7 +613,7 @@ class TasksExtension(Extension):
         # client lost, and telling it so as a failure teaches it to retry.
         return CancelTaskResult(**record.public().model_dump(by_alias=False))
 
-    async def _handle_result(self, params: Any, ctx: Any) -> Any:
+    async def _handle_result(self, ctx: Any, params: Any) -> Any:
         record = await self.store.get(params.task_id)
         if record is None:
             raise _no_such_task(params.task_id)
